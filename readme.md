@@ -5,6 +5,10 @@ virtual file system: scan a frequency range, record every channel whose energy
 rises above a configurable SNR threshold, and listen to a channel live.
 
 Supported receivers: RTL-SDR (Nooelec and other RTL2832U sticks) and HackRF.
+![audio](audui.png)
+![single](single.png)
+![thumbs](thumbs.png)
+![multi](multi.png)
 
 ## Status
 
