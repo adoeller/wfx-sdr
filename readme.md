@@ -9,7 +9,7 @@ Supported receivers: RTL-SDR (Nooelec and other RTL2832U sticks) and HackRF.
 ![audio](audio.png)
 ![single](single.png)
 ![multi](multi.png)
-![thumbs](thumbs.png)
+![thumbs](thumb.png)
 
 ## Status
 
