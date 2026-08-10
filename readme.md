@@ -178,6 +178,20 @@ The reading is rounded to a step the display can resolve — one pixel of a
 precision the cursor does not have. The step follows the zoom on the usual
 1 / 2 / 5 ladder, so a channel view still reads down to the hertz.
 
+**A second, horizontal line reads the level.** While the pointer is over the
+graph itself, a dotted line runs across it at the pointer's height, labelled
+with the level that height stands for. It is drawn from the inverse of the
+mapping the curve itself uses, so the reading and the trace cannot disagree.
+
+The two labels answer different questions on purpose: the one at the top
+says how strong the *trace* is at this frequency, the one at the line says
+what level the *pointer* is at. Together they measure a distance — park the
+pointer on the noise floor and read straight off how far a carrier stands
+out of it, instead of counting 20 dB grid lines.
+
+There is no horizontal line over the waterfall. Height is time there, not
+level, and a line across it would offer a measurement that does not exist.
+
 Where the pointer is gets read during the paint rather than tracked through
 mouse messages. That way a pointer that leaves the window, or a window that
 ends up under another one, needs no special handling: if the cursor is not
@@ -351,14 +365,32 @@ In Total Commander's thumbnail view a recording shows what is *in* it:
   from the bottom (start of the recording) upwards
 - the top 15 % is the spectrum at the middle of that section, as a curve
 
-Both share one frequency axis, so a carrier lines up between the curve and
-its trace below it. The axis is **two-sided in both cases, with the centre of
-the channel in the middle of the picture**. For an IF recording that is the
-recorded centre frequency, so a signal below it appears left of centre. For
-an audio recording it is the channel's own centre frequency — the file is the
-demodulated channel, so its 0 Hz *is* that centre, and the spectrum is drawn
-mirrored around it. A one-sided 0 … fs/2 axis would squash the whole signal
-against the left edge, where nothing lines up with anything.
+Both share one frequency axis, and which axis that is depends on what the
+file actually contains:
+
+- An **IF recording** is complex baseband, so it gets a two-sided radio axis
+  with the recorded centre frequency in the middle: a signal below the
+  centre really does appear left of it.
+- An **audio recording** gets a one-sided **audio** axis, 0 up to a fifth
+  beyond what the mode carries — 6 kHz for NFM, 18 kHz for WFM.
+
+That distinction was got wrong at first, and the mistake is worth recording.
+Audio recordings used to be drawn two-sided as well, on the argument that a
+demodulated channel's 0 Hz *is* the channel's centre frequency. That holds
+for SSB, where demodulation really is a frequency shift, and roughly for AM.
+**It is false for FM**, where the discriminator maps frequency onto
+amplitude: the audio spectrum bears no relation to the radio spectrum. The
+result looked like an RF picture and was not one. Worse, it was uninformative
+in three separate ways — its width was the demodulator's own audio filter and
+therefore identical for every recording of a given mode; its symmetry was an
+artifact of the input being real-valued; and the transmission itself was
+squeezed into a fifth of the frame with mirrored emptiness either side.
+
+The mode is not stored in the WAV, so the span comes from the channel width
+the recorder puts in the file name (`..._12.5kHz_...` is NFM, `..._256kHz_...`
+is WFM). A WAV this plugin did not write has no such token and is drawn
+across its whole one-sided band, which is the right answer when nothing is
+known about the content.
 
 Nothing is read whole — a 30 s IF recording at 2.048 MS/s is a quarter of a
 gigabyte, and the renderer seeks to the few kilobytes each transform needs. A
@@ -430,6 +462,22 @@ The request runs under the Windows loader lock, so it is one short connect
 and one write with no reply and no retry; anything that could block there
 would hang a closing Total Commander instead of closing it. The flag is read
 from a variable rather than the INI for the same reason.
+
+**Do not expect this to fire often.** Two things limit it, and both are
+worth knowing before treating a surviving engine as a bug:
+
+- Total Commander does not unload a file-system plugin every time you
+  navigate out of it. In practice the DLL stays loaded for the life of the
+  application, so the hook runs at exit and not before. It has been measured
+  against `spektrum_probe`, which loads and unloads the same DLL for real:
+  the engine logs `watchdog: QUIT received - exiting` and is gone.
+- The whole budget is 20 ms. If the engine happens to be serving another
+  request at that instant - and a Lister view polls several times a second -
+  the connect fails and the QUIT is dropped, silently and deliberately.
+
+What actually guarantees no engine outlives Total Commander is not this flag
+but the client watchdog described above: every request carries the client's
+process id, and the engine waits on that process.
 
 ## What happens when Total Commander closes
 
@@ -675,9 +723,44 @@ Neither driver library is bundled — both are third-party and separately
 licensed. Place the DLL next to `spektrum_engine*.exe` (the engine looks
 there first) or anywhere on the `PATH`.
 
+**The plugin and the engine themselves need nothing.** Their whole import
+list is Windows: `kernel32`, `user32`, `oleaut32`, `winmm` for the engine,
+`kernel32`, `user32`, `gdi32`, `oleaut32` for the DLL. No C runtime, no
+redistributable — that is what the Free Pascal build buys.
+
+Everything below is what the *driver* libraries drag in. Only the first
+column is loaded by name at run time; the rest are ordinary imports that
+Windows resolves when that library loads, and a missing one shows up as
+"`hackrf.dll` not found" even though the file is sitting right there.
+
+| Needed for | Library | Pulls in |
+|---|---|---|
+| RTL-SDR | `rtlsdr.dll` or `librtlsdr.dll` | depends on the build — see below |
+| HackRF | `hackrf.dll` or `libhackrf.dll` | `libusb-1.0.dll`, `pthreadVC2.dll`, `VCRUNTIME140.dll` |
+
+`VCRUNTIME140.dll` (with the `api-ms-win-crt-*` stubs beside it) comes from
+the Visual C++ 2015-2022 redistributable and is on most machines already.
+The other two have to come from somewhere, and "somewhere" is the trap: they
+are frequently found by accident, in `System32` or on the `PATH` courtesy of
+some other SDR program. That works until that program is uninstalled, and
+then a HackRF stops being found for no visible reason. **Put them in the
+plugin folder**, where they come first in the search order and belong to
+this installation.
+
+To check what a particular library actually wants, read the DLL names out of
+it — they sit in the import table as plain text:
+
+```bash
+tr -c '[:print:]' '\n' < hackrf.dll | grep -i '\.dll$' | sort -fu
+```
+
 ### RTL-SDR
 
-Needs `rtlsdr.dll` (or `librtlsdr.dll`) plus `libusb-1.0.dll`.
+Needs `rtlsdr.dll` (or `librtlsdr.dll`). Whether `libusb-1.0.dll` has to be
+supplied separately **depends on which build you have**: the widely
+circulated 337 KB build links it statically and imports nothing but
+`kernel32`, while other builds expect it beside them. Run the command above
+against your copy rather than guessing.
 
 - Official Osmocom Windows builds:
   [ftp.osmocom.org/binaries/windows/rtl-sdr](https://ftp.osmocom.org/binaries/windows/rtl-sdr/)
@@ -691,7 +774,10 @@ Match the architecture: `spektrum_engine64.exe` needs the 64-bit DLL.
 
 ### HackRF
 
-Needs `hackrf.dll`. Windows binaries ship with the official release archives:
+Needs `hackrf.dll`, **and the two libraries it imports**: `libusb-1.0.dll`
+and `pthreadVC2.dll`. All three ship together in the official release
+archives, which is the reason to take them from the same archive rather than
+collecting them from wherever they happen to exist:
 [github.com/greatscottgadgets/hackrf/releases](https://github.com/greatscottgadgets/hackrf/releases)
 
 It also needs the WinUSB driver — the same Zadig procedure as above.
@@ -700,6 +786,15 @@ Every entry point is resolved by name at load time, so a `hackrf.dll` that
 is older than one of them loses that feature rather than failing to load.
 The gain stages, the baseband filter and the bias tee are all optional in
 that sense; only open, tune, sample rate and start/stop are required.
+
+### One architecture per folder
+
+The 32-bit and 64-bit driver libraries have identical names, so a single
+folder can only hold one set of them. Installing both engines side by side
+therefore works only as long as just one architecture's drivers are present:
+`spektrum_engine32.exe` would find the 64-bit `hackrf.dll` first — it is in
+its own folder, ahead of the `PATH` — and fail to load it. With a 64-bit
+Total Commander, which is the normal case, this never comes up.
 
 ## Building
 
@@ -741,8 +836,11 @@ error points at a line that no longer looks like that, delete
 The probe driver is built directly with fpc:
 
 ```bash
-fpc -Twin64 -Px86_64 -MDelphi -O2 -FUprobe/build -obin/spektrum_probe.exe probe/spektrum_probe.lpr
+fpc -Twin64 -Px86_64 -MDelphi -O2 -FUprobe\build -obin\spektrum_probe.exe probe\spektrum_probe.lpr
 ```
+
+Backslashes in `-o` on purpose: with forward slashes FPC drops the
+extension and writes `bin\spektrum_probe`, which then will not run.
 
 ## Testing the engine from the command line
 
