@@ -37,10 +37,32 @@ interchangeable:
 | `HackRF Bias Tee` | on / off | 3.3 V on the antenna port for an active antenna. |
 
 The hardware refuses anything off those step grids, so a value is rounded to
-the nearest step before it is sent. `Gain` still works for a HackRF: `-1`
-means "use the three settings above", and any other value is distributed —
-the RF stage first, because that is the stage that buys signal-to-noise, then
-the baseband stage with the remainder.
+the nearest step before it is sent. Any `Gain` value other than `-1` is
+distributed across the stages — the RF stage first, because that is the stage
+that buys signal-to-noise, then the baseband stage with the remainder.
+
+`Gain = -1` (automatic) means different things on the two receivers, because
+a HackRF has no AGC at all. On an RTL-SDR it hands regulation to the tuner.
+On a HackRF the plugin regulates in software: it measures the raw level of
+every block and moves the stages to keep the converter around 8 % of full
+scale. The `HackRF LNA/VGA Gain` settings are then only the starting point.
+
+That regulation is not cosmetic — **both** ends of the range produce phantom
+signals that look exactly like real channels:
+
+- **Too little gain.** The signal ends up below one step of the 8-bit
+  converter and only survives through the processing gain of the FFT. I and Q
+  then quantise differently, which mirrors the spectrum about the tuner
+  centre. Measured against a local transmitter at 142.95 MHz with the stages
+  at 0/2 dB: a phantom channel at 141.05 MHz, only 0.6 dB below the real one.
+- **Too much gain.** The converter clips and intermodulation puts lines at
+  unrelated frequencies. Same transmitter with the stages at 32/40 dB: full
+  scale reached, and three spurious lines that were not there at 16/20 dB.
+
+`bin\spektrum_engine64.exe --iqstat --sdr=hackrf --rate=10M` reports the raw
+level, the balance between the two channels and their correlation. It needs
+no signal — receiver noise is enough — and is the quickest way to tell a real
+signal from an artefact of the settings.
 
 The monitor session that feeds a live view **tunes a quarter of the sample
 rate beside** the frequency being looked at, the same trick live audio uses.
@@ -326,6 +348,31 @@ the speaker rather than a second demodulator over the same samples, and they
 hand it the **unmuted** stream: what the squelch does to the loudspeaker is
 the speaker's business, and the recorder decides for itself what the hang
 time swallows.
+
+### One signal, one channel
+
+The detector reports one channel per contiguous run above the threshold. That
+is right for separate signals and wrong for a single strong one: its
+modulation sidebands break the threshold in their own right, and one carrier
+turns into eight or ten channels that all record the same transmission.
+Measured against a local NFM transmitter: the carrier at −22.9 dBFS with
+sidebands from −64 to −69 dBFS out to ±90 kHz, every one of them more than
+15 dB above the noise floor.
+
+`Merge Channels` (default `1`) folds those skirts into the channel that
+carries them. Two conditions have to hold together, and each guards a
+different mistake — proximity alone would swallow a genuine neighbouring
+station, a level difference alone would swallow a weak signal anywhere in the
+band:
+
+- the stronger hit is within twenty grid steps, clamped to 25…150 kHz — the
+  upper limit is narrower than the 200 kHz broadcast stations are spaced at,
+  so a 100 kHz grid cannot make neighbours eat each other;
+- and it is at least 20 dB stronger.
+
+Set it to `0` to get one channel per grid slot that exceeds the threshold,
+which is what the measurement literally says. `--nomerge` does the same for a
+scan started from the command line.
 
 ### Squelch and hang time
 
